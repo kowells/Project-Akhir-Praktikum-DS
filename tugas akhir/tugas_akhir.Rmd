@@ -1,0 +1,263 @@
+---
+title: "tugas_akhir"
+author: "kowells"
+date: "2022-11-22"
+output: pdf_document
+---
+
+```{r }
+#input library
+library(tm) # corpus
+library(syuzhet) # labeling
+library(caTools) # split data
+library(plyr) # case when
+library(RTextTools) # create matrix
+library(wordcloud) # wordcloud
+library(e1071) # naive bayes
+library(caret) # confusion matrix
+library(stringr) # string split
+library(vroom) #load dataset
+library(here) #menyimpan dataset
+library(shiny) #visualisasi
+library(stopwords) #stopword
+
+set.seed(100)
+
+```
+
+```{r }
+d <- read.csv("D:/semester 5/Prak Data Science/tugas akhir i/ReviewTiket.csv")
+# remove spam 
+uniqueText <- unique(d$content)
+
+# remove  element
+
+removeMention <- function(x) gsub("@\\w+", "", x)
+cleanText <- lapply(uniqueText, removeMention)
+
+# remove url element
+removeURL <- function(x) gsub("http\\S+", "", x)
+cleanText <- lapply(cleanText, removeURL)
+
+# remove hastag element
+removeHashtag <- function(x) gsub("#\\S+", "", x)
+cleanText <- lapply(cleanText, removeHashtag)
+
+# remove new line character
+removeNewLine <- function(x) gsub("\n", " ", x)
+cleanText <- lapply(cleanText, removeNewLine)
+
+# remove nonalphabetical character
+removeNonAlphabet <- function(x) gsub("[^A-Za-z ]", "", x)
+cleanText <- lapply(cleanText, removeNonAlphabet)
+
+# trim space into one space
+cleanText <- lapply(cleanText, stripWhitespace)
+
+# text to lowecase
+cleanText <- lapply(cleanText, tolower)
+
+# remove stop words
+IndonesiaStopWords <- readLines("stoplist.txt")
+cleanText <- lapply(cleanText, removeWords, IndonesiaStopWords)
+
+
+dataframe<-data.frame(text=unlist(sapply(cleanText, `[`)), stringsAsFactors=F)
+write.csv(dataframe,file = "tiketCleann.csv")
+
+```
+
+Data Labelling
+```{r}
+tiketClean<-read.csv("tiketCleann.csv",header=TRUE)
+View(tiketClean)
+
+#skoring
+kata.positif <- scan("kata-positif.txt",what="character",comment.char=";")
+kata.negatif <- scan("kata-negatif.txt",what="character",comment.char=";")
+score.sentiment = function(kalimat2, kata.positif, kata.negatif,
+                           .progress='none')
+{
+  require(stringr)
+  scores = laply(kalimat2, function(kalimat, kata.positif,
+                                    kata.negatif) {
+    kalimat = gsub('[[:punct:]]', '', kalimat)
+    kalimat = gsub('[[:cntrl:]]', '', kalimat)
+    kalimat = gsub('\\d+', '', kalimat)
+    kalimat = tolower(kalimat)
+    list.kata = str_split(kalimat, '\\s+')
+    kata2 = unlist(list.kata)
+    positif.matches = match(kata2, kata.positif)
+    negatif.matches = match(kata2, kata.negatif)
+    positif.matches = !is.na(positif.matches)
+    negatif.matches = !is.na(negatif.matches)
+    score = sum(positif.matches) - (sum(negatif.matches))
+    return(score)
+  }, kata.positif, kata.negatif, .progress=.progress )
+  scores.df = data.frame(score=scores, text=kalimat2)
+  return(scores.df)}
+
+hasil = score.sentiment(tiketClean$text, kata.positif, kata.negatif)
+#mengubah nilai score menjadi sentimen
+hasil$klasifikasi<- ifelse(hasil$score<0, "Negatif",ifelse(hasil$score==0,"Netral","Positif"))
+
+#menukar urutan kolom
+data <- hasil[c(3,1,2)]
+
+#View(data)
+write.csv(data, file = "tiketLabell.csv")
+```
+
+Tampilkan data setelah diberi label
+
+```{r}
+data=read.csv("tiketLabell.csv")
+#melihat 6 data teratas dari datalabel.csv
+head(data)
+library(tidyverse) 
+datas=data%>%select(text,klasifikasi)
+#melihat 6 data teratas dari kolom text dan klasifikasi pada datalabel.csv
+head(datas)
+#presentase setiap label klasifikasi
+round(prop.table(table(datas$klasifikasi)),2)
+
+```
+
+menampilkan data dalam bentuk matriks berdsasarkan frequensi suatu data yg keluar
+```{r }
+dtm = DocumentTermMatrix(datas$text) 
+dtm 
+dim(dtm) 
+dtm = removeSparseTerms(dtm, 0.999) 
+dim(dtm)
+```
+
+membuat fungsi untuk menkonversi data 
+```{r}
+convert <- function(x) {
+y <- ifelse(x > 0, 1,0)
+y <- factor(y, levels=c(0,1), labels=c("No", "Yes"))
+y
+    }  
+    
+    datanaive = apply(dtm, 2, convert)
+    
+    dataset = as.data.frame(as.matrix(datanaive))    
+    dataset$Class = as.factor(datas$klasifikasi)
+    str(dataset$Class)
+```
+
+Visualisasi Data Setelah diberi label
+
+```{r}
+library(wordcloud) 
+library(ggplot2) 
+#wordcloud 
+require (RColorBrewer)
+positive <- subset(datas,klasifikasi=="Positif")
+wordcloud(positive$text, max.words = 100, colors = "blue") 
+negative <- subset(datas,klasifikasi=="Negatif") 
+wordcloud(negative$text, max.words = 100, colors = "purple") 
+netral <- subset(datas,klasifikasi=="Netral") 
+wordcloud(netral$text, max.words = 100, colors = "turquoise")
+```
+
+Split data menjadi data training dan data testing dengan presentase 75% dan 25%
+
+```{r}
+set.seed(31)
+    split = sample(2,nrow(dataset),prob = c(0.75,0.25),replace = TRUE)
+    train_set = dataset[split == 1,]
+    test_set = dataset[split == 2,] 
+    
+    prop.table(table(train_set$Class))
+    prop.table(table(test_set$Class))
+```
+
+Melakukan klasifikasi naive bayes menggunakan data training
+
+```{r}
+    library(e1071)
+    library(caret)
+    control= trainControl(method="repeatedcv", number=10, repeats=2)
+    system.time( classifier_nb <- naiveBayes(train_set, train_set$Class, laplace = 1,trControl = control,tuneLength = 7) )
+```
+
+Evaluasi Model klasifikasi menggunakan data testing
+
+```{r}
+
+    nb_pred = predict(classifier_nb, type = 'class', newdata =  test_set)
+    confusionMatrix(nb_pred,test_set$Class)
+```
+
+Menampilkan data klasifikasi, Bar Plot, dan Wordcloud pada GUI shinny
+
+```{r}
+ui <- fluidPage(
+    titlePanel("Sentiment Analysis Review Pengguna Tiket.com"),
+        mainPanel(
+            
+            tabsetPanel(type = "tabs",
+                        #Bar Plot
+                        tabPanel("Bar Plot", plotOutput("scatterplot")), 
+                        # Plot
+                        tabPanel("Data", DT::dataTableOutput('tbl1')),
+                        # wordcloud
+                        tabPanel("Wordcloud", plotOutput("Wordcloud"))
+                        )
+        )
+    )
+# SERVER
+server <- function(input, output) {
+    
+    # Output Data
+  output$tbl1 = DT::renderDataTable({
+    datatabel <-read.csv("tiketLabell.csv",stringsAsFactors = FALSE)
+    DT::datatable(datatabel, options= list(lengthChange = FALSE))
+    })
+    
+    #output Bar Plot
+  output$scatterplot <- renderPlot({
+    d<-read.csv("tiketLabell.csv",stringsAsFactors = FALSE) 
+    barchart(d$klasifikasi, 
+         horizontal = FALSE, 
+         main = "Sentiment Analysis", 
+         xlab = "Klasifikasi",
+         ylab = "Frequency", 
+         col = "darkgreen")
+    }, height=400)
+    
+    #output wordcloud
+  output$Wordcloud <- renderPlot({
+    require (corpus)
+    df<-read.csv("tiketCleann.csv",stringsAsFactors = FALSE)
+    glimpse(df)
+    set.seed(20)
+    df<-df[sample(nrow(df)),]
+    df<-df[sample(nrow(df)),]
+    glimpse(df)
+    corpus<-Corpus(VectorSource(df$text))
+    corpus
+
+  #fungsinya untuk membersihkan data data yang tidak dibutuhkan 
+  corpus.clean<-corpus%>%
+    tm_map(content_transformer(tolower))%>%
+    tm_map(removePunctuation)%>%
+    tm_map(removeNumbers)%>%
+    tm_map(removeWords, c("sdh", "kalo", "tdk"))%>%
+    tm_map(stripWhitespace)
+  
+    wordcloud(corpus.clean,min.freq = 4,max.words=100,random.order=F,colors=brewer.pal(8,"Dark2"))
+  })
+}
+
+shinyApp(ui = ui, server = server)
+```
+
+```{r }
+
+
+
+
+```
